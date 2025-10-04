@@ -16,7 +16,7 @@ jobs:
         shell: bash
 
     env:
-      SONAR_REPO: "https://eclipse-uc.sonarlint.org"
+      # Stable p2 update sites for non-SonarLint plugins
       SPOTBUGS_REPO: "https://spotbugs.github.io/eclipse/"
       BASH_REPO: "https://de-jcup.github.io/update-site-eclipse-bash-editor/update-site/"
       SQL_REPO: "https://de-jcup.github.io/update-site-eclipse-sql-editor/update-site/"
@@ -47,6 +47,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           TRAIN="${{ steps.train.outputs.train }}"
           TAG="eclipse-java-${TRAIN}-with-plugins"
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -63,10 +64,28 @@ jobs:
       - name: Prepare build tools
         if: ${{ steps.decide.outputs.skip == 'false' }}
         run: |
+          set -euo pipefail
           sudo apt-get update -y
-          sudo apt-get install -y jq unzip p7zip-full xz-utils
+          sudo apt-get install -y jq unzip zip p7zip-full xz-utils rsync
 
-      - name: Download Eclipse packages (Linux & Windows, with mirror retries)
+      - name: Discover latest SonarLint p2 repository
+        if: ${{ steps.decide.outputs.skip == 'false' }}
+        id: sonarlint
+        run: |
+          set -euo pipefail
+          BASE="https://binaries.sonarsource.com/SonarLint-for-Eclipse/releases/"
+          HTML="$(curl -fsSL "$BASE")"
+          # Extract dotted version directories, sort, take latest (e.g., 11.17.0.83113)
+          VER="$(printf '%s\n' "$HTML" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n1)"
+          if [[ -z "${VER:-}" ]]; then
+            echo "Could not detect latest SonarLint version" >&2
+            exit 1
+          fi
+          REPO="${BASE}${VER}/"
+          echo "Latest SonarLint: $VER -> $REPO"
+          echo "repo=$REPO" >> "$GITHUB_OUTPUT"
+
+      - name: Download Eclipse packages (Linux & Windows, try mirrors)
         if: ${{ steps.decide.outputs.skip == 'false' }}
         id: dl
         run: |
@@ -83,9 +102,13 @@ jobs:
             echo "Fetching mirrors from $XML_URL"
             local MIRRORS
             MIRRORS=$(curl -fsSL "$XML_URL" | grep -oP '(?<=url=").*?(?=")')
+            if [[ -z "$MIRRORS" ]]; then
+              echo "No mirrors found for $FILE" >&2
+              return 1
+            fi
             for url in $MIRRORS; do
               echo "Trying $url"
-              if curl -fSL --retry 3 --connect-timeout 15 "$url" -o "$OUT"; then
+              if curl -fSL --retry 3 --connect-timeout 20 "$url" -o "$OUT"; then
                 echo "Downloaded $OUT successfully from $url"
                 return 0
               fi
@@ -104,15 +127,22 @@ jobs:
         if: ${{ steps.decide.outputs.skip == 'false' }}
         id: unpack
         run: |
+          set -euo pipefail
           tar -xzf "${{ steps.dl.outputs.linux }}"
           ECLIPSE_DIR="$(find . -maxdepth 1 -type d -name 'eclipse' | head -n1)"
+          if [[ -z "${ECLIPSE_DIR:-}" ]]; then
+            echo "Eclipse directory not found after extraction" >&2
+            exit 1
+          fi
           echo "eclipse_dir=$ECLIPSE_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve feature IDs from update sites
+      - name: Resolve feature IUs from p2 repositories
         if: ${{ steps.decide.outputs.skip == 'false' }}
         id: resolve
         run: |
+          set -euo pipefail
           ECLIPSE="${{ steps.unpack.outputs.eclipse_dir }}/eclipse"
+
           resolve_iu() {
             local repo="$1"
             local pattern="$2"
@@ -121,19 +151,41 @@ jobs:
             | awk '/feature\.group/ {print $1}' \
             | grep -Ei "$pattern" | head -n1
           }
-          SONAR_IU="$(resolve_iu "${{ env.SONAR_REPO }}" 'sonar|sonarlint|sonarqube')"
-          SPOT_IU="$(resolve_iu "${{ env.SPOTBUGS_REPO }}" 'spotbugs')"
-          BASH_IU="$(resolve_iu "${{ env.BASH_REPO }}" 'basheditor')"
-          SQL_IU="$(resolve_iu "${{ env.SQL_REPO }}" 'sqleditor')"
-          JENKINS_IU="$(resolve_iu "${{ env.JENKINS_REPO }}" 'jenkins.*editor')"
-          YAML_IU="$(resolve_iu "${{ env.YAML_REPO }}" 'yaml.*editor')"
-          BAT_IU="$(resolve_iu "${{ env.BAT_REPO }}" 'batch.*editor|bat.*editor')"
-          HIJSON_IU="$(resolve_iu "${{ env.HIJSON_REPO }}" 'hijson')"
-          EGRADLE_IU="$(resolve_iu "${{ env.EGRADLE_REPO }}" 'egradle')"
+
+          # SonarLint from dynamically discovered p2 repo
+          SONAR_REPO="${{ steps.sonarlint.outputs.repo }}"
+          SONAR_IU="$(resolve_iu "$SONAR_REPO" '(^|[[:punct:]])org\.sonarlint\.eclipse\.feature\.feature\.group($|[[:punct:]])|sonarlint|sonarqube')"
+
+          # Static repos
+          SPOT_IU="$(resolve_iu "${{ env.SPOTBUGS_REPO }}" 'spotbugs.*feature\.group')"
+          BASH_IU="$(resolve_iu "${{ env.BASH_REPO }}" 'basheditor.*feature\.group')"
+          SQL_IU="$(resolve_iu "${{ env.SQL_REPO }}" 'sqleditor.*feature\.group')"
+          JENKINS_IU="$(resolve_iu "${{ env.JENKINS_REPO }}" 'jenkins.*editor.*feature\.group')"
+          YAML_IU="$(resolve_iu "${{ env.YAML_REPO }}" 'yaml.*editor.*feature\.group')"
+          BAT_IU="$(resolve_iu "${{ env.BAT_REPO }}" '(batch|bat).*editor.*feature\.group')"
+          HIJSON_IU="$(resolve_iu "${{ env.HIJSON_REPO }}" '(hijson|json).*feature\.group')"
+          EGRADLE_IU="$(resolve_iu "${{ env.EGRADLE_REPO }}" 'egradle.*feature\.group')"
+
+          echo "Resolved IUs:"
+          printf '  %s\n' \
+            "SONAR_REPO=$SONAR_REPO" \
+            "SONAR_IU=$SONAR_IU" \
+            "SPOT_IU=$SPOT_IU" \
+            "BASH_IU=$BASH_IU" \
+            "SQL_IU=$SQL_IU" \
+            "JENKINS_IU=$JENKINS_IU" \
+            "YAML_IU=$YAML_IU" \
+            "BAT_IU=$BAT_IU" \
+            "HIJSON_IU=$HIJSON_IU" \
+            "EGRADLE_IU=$EGRADLE_IU"
+
+          # Sanity check
           for v in SONAR_IU SPOT_IU BASH_IU SQL_IU JENKINS_IU YAML_IU BAT_IU HIJSON_IU EGRADLE_IU; do
             [[ -n "${!v}" ]] || { echo "Failed to resolve IU for $v" >&2; exit 1; }
           done
+
           {
+            echo "SONAR_REPO=$SONAR_REPO"
             echo "SONAR_IU=$SONAR_IU"
             echo "SPOT_IU=$SPOT_IU"
             echo "BASH_IU=$BASH_IU"
@@ -145,12 +197,34 @@ jobs:
             echo "EGRADLE_IU=$EGRADLE_IU"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Install plugins into Linux Eclipse
+      - name: Install plugins into Linux Eclipse (headless p2)
         if: ${{ steps.decide.outputs.skip == 'false' }}
         run: |
+          set -euo pipefail
           ECLIPSE="${{ steps.unpack.outputs.eclipse_dir }}/eclipse"
-          REPOS=$(IFS=,; echo "${{ env.SONAR_REPO }},${{ env.SPOTBUGS_REPO }},${{ env.BASH_REPO }},${{ env.SQL_REPO }},${{ env.JENKINS_REPO }},${{ env.YAML_REPO }},${{ env.BAT_REPO }},${{ env.HIJSON_REPO }},${{ env.EGRADLE_REPO }}")
-          IUS=$(IFS=,; echo "${{ steps.resolve.outputs.SONAR_IU }},${{ steps.resolve.outputs.SPOT_IU }},${{ steps.resolve.outputs.BASH_IU }},${{ steps.resolve.outputs.SQL_IU }},${{ steps.resolve.outputs.JENKINS_IU }},${{ steps.resolve.outputs.YAML_IU }},${{ steps.resolve.outputs.BAT_IU }},${{ steps.resolve.outputs.HIJSON_IU }},${{ steps.resolve.outputs.EGRADLE_IU }}")
+
+          REPOS=$(IFS=,; echo \
+            "${{ steps.resolve.outputs.SONAR_REPO }}",\
+"${{ env.SPOTBUGS_REPO }}",\
+"${{ env.BASH_REPO }}",\
+"${{ env.SQL_REPO }}",\
+"${{ env.JENKINS_REPO }}",\
+"${{ env.YAML_REPO }}",\
+"${{ env.BAT_REPO }}",\
+"${{ env.HIJSON_REPO }}",\
+"${{ env.EGRADLE_REPO }}")
+
+          IUS=$(IFS=,; echo \
+            "${{ steps.resolve.outputs.SONAR_IU }}",\
+"${{ steps.resolve.outputs.SPOT_IU }}",\
+"${{ steps.resolve.outputs.BASH_IU }}",\
+"${{ steps.resolve.outputs.SQL_IU }}",\
+"${{ steps.resolve.outputs.JENKINS_IU }}",\
+"${{ steps.resolve.outputs.YAML_IU }}",\
+"${{ steps.resolve.outputs.BAT_IU }}",\
+"${{ steps.resolve.outputs.HIJSON_IU }}",\
+"${{ steps.resolve.outputs.EGRADLE_IU }}")
+
           "$ECLIPSE" -nosplash -application org.eclipse.equinox.p2.director \
             -repository "$REPOS" \
             -installIU "$IUS" \
@@ -159,10 +233,11 @@ jobs:
             -destination "$(dirname "$ECLIPSE")" \
             -roaming
 
-      - name: Create portable dropins
+      - name: Create portable dropins from installed plugins
         if: ${{ steps.decide.outputs.skip == 'false' }}
         id: dropins
         run: |
+          set -euo pipefail
           ECLIPSE_ROOT="${{ steps.unpack.outputs.eclipse_dir }}"
           mkdir -p dropins/custom/eclipse/plugins dropins/custom/eclipse/features
           rsync -a "${ECLIPSE_ROOT}/plugins/"  "dropins/custom/eclipse/plugins/"
@@ -173,6 +248,7 @@ jobs:
         if: ${{ steps.decide.outputs.skip == 'false' }}
         id: packlinux
         run: |
+          set -euo pipefail
           TRAIN="${{ steps.train.outputs.train }}"
           ECLIPSE_ROOT="${{ steps.unpack.outputs.eclipse_dir }}"
           cp -r "${{ steps.dropins.outputs.dropins_dir }}/custom" "${ECLIPSE_ROOT}/dropins/"
@@ -184,6 +260,7 @@ jobs:
         if: ${{ steps.decide.outputs.skip == 'false' }}
         id: packwin
         run: |
+          set -euo pipefail
           TRAIN="${{ steps.train.outputs.train }}"
           WIN_ZIP="${{ steps.dl.outputs.windows }}"
           mkdir win && (cd win && unzip -q "../$WIN_ZIP")
@@ -196,17 +273,21 @@ jobs:
         if: ${{ steps.decide.outputs.skip == 'false' }}
         id: notes
         run: |
+          set -euo pipefail
+          TRAIN="${{ steps.train.outputs.train }}"
           cat > RELEASE_NOTES.md << 'EOF'
           # Eclipse IDE for Java Developers – bundled plugins
 
           Bundled plugins:
-          - SonarQube for IDE (SonarLint)
+          - SonarQube for IDE (SonarLint) — latest versioned p2 repo
           - SpotBugs
           - de.jcup editors: Bash, SQL, Jenkins, YAML, Batch, HiJSON, EGradle
 
-          **How to use**
+          **Usage**
           - Linux: extract the `.tar.gz` and run `eclipse`
           - Windows: unzip and run `eclipse.exe`
+
+          Notes: built automatically from latest SimRel; plugins are preinstalled via `dropins/`.
           EOF
           echo "path=RELEASE_NOTES.md" >> "$GITHUB_OUTPUT"
 
@@ -215,6 +296,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           gh release create "${{ steps.decide.outputs.tag }}" \
             "${{ steps.packlinux.outputs.linux_out }}" \
             "${{ steps.packwin.outputs.windows_out }}" \
