@@ -16,6 +16,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Install tools early so later steps (e.g., jq) are available
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y unzip zip xz-utils p7zip-full rsync jq curl
+
       - name: Get latest Eclipse SimRel train
         id: train
         run: |
@@ -63,13 +70,6 @@ jobs:
       - name: Stop early if release already exists
         if: steps.decide.outputs.skip == 'true'
         run: echo "Release ${{ steps.decide.outputs.tag }} already exists. Nothing to do."
-
-      - name: Install build tools
-        if: steps.decide.outputs.skip == 'false'
-        run: |
-          set -euo pipefail
-          sudo apt-get update -y
-          sudo apt-get install -y unzip zip xz-utils p7zip-full rsync jq
 
       - name: Download Eclipse (Windows x64) via mirrors with retry
         if: steps.decide.outputs.skip == 'false'
@@ -128,4 +128,58 @@ jobs:
           PLUGDIR="dropins/custom/eclipse/plugins"
           SLOOP_WIN="$(ls "$PLUGDIR"/org.sonarlint.eclipse.sloop.windows.x64_*.jar | head -n1 || true)"
           if [[ -z "${SLOOP_WIN:-}" ]]; then
-            echo "Windows x64 sloop jar not found
+            echo "Windows x64 sloop jar not found in SonarLint site" >&2
+            exit 1
+          fi
+          BASENAME="$(basename "$SLOOP_WIN")"
+          TARGET_DIR="${PLUGDIR}/${BASENAME%.jar}"
+          mkdir -p "$TARGET_DIR"
+          unzip -q "$SLOOP_WIN" -d "$TARGET_DIR"
+          rm -f "$SLOOP_WIN"   # <-- delete the Windows x64 sloop JAR after extracting
+
+          # Remove all other sloop jars that don't match windows x64
+          find "$PLUGDIR" -maxdepth 1 -type f -name 'org.sonarlint.eclipse.sloop.*.jar' ! -name "$BASENAME" -print -delete
+
+          echo "dir=$(pwd)/dropins" >> "$GITHUB_OUTPUT"
+
+      - name: Inject dropins into Windows Eclipse & repackage (Windows x64 only)
+        if: steps.decide.outputs.skip == 'false'
+        id: packwin
+        run: |
+          set -euo pipefail
+          TRAIN="${{ steps.train.outputs.train }}"
+          WIN_ZIP="${{ steps.dl.outputs.windows }}"
+          mkdir win && (cd win && unzip -q "../$WIN_ZIP")
+          # Add our dropins
+          mkdir -p "win/eclipse/dropins"
+          cp -r "${{ steps.dropins.outputs.dir }}/custom" "win/eclipse/dropins/"
+          OUT="eclipse-java-${TRAIN}-R-win32-x86_64-sonarlint.zip"
+          (cd win && zip -qr "../$OUT" eclipse)
+          echo "file=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Write release notes
+        if: steps.decide.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          cat > RELEASE_NOTES.md <<'EOF'
+          Eclipse IDE for Java Developers (Windows x64) bundled with SonarLint ${{ steps.sonarlint.outputs.version }} via dropins.
+
+          - Eclipse train: ${{ steps.train.outputs.train }}
+          - SonarLint update-site ZIP: ${{ steps.sonarlint.outputs.zip_url }}
+          - Sloop handling: kept Windows x64 sloop JAR, extracted into a folder of the same name, deleted that JAR, and removed other sloop JARs.
+
+          Usage:
+          - Unzip and run `eclipse.exe`
+          EOF
+
+      - name: Publish GitHub Release
+        if: steps.decide.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TITLE="Eclipse Java (Windows x64) + SonarLint – ${{ steps.train.outputs.train }} (SonarLint ${{ steps.sonarlint.outputs.version }})"
+          gh release create "${{ steps.decide.outputs.tag }}" \
+            "${{ steps.packwin.outputs.file }}" \
+            --title "$TITLE" \
+            --notes-file RELEASE_NOTES.md
