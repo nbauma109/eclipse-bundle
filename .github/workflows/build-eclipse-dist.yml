@@ -44,69 +44,95 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y unzip zip xz-utils p7zip-full rsync jq
+          sudo apt-get install -y unzip zip xz-utils p7zip-full rsync
 
-      - name: Discover latest SonarLint repo
+      - name: Discover latest SonarLint p2 repo (from S3-style listing)
         if: steps.check.outputs.exists == 'false'
         id: sonarlint
         run: |
-          BASE="https://binaries.sonarsource.com/SonarLint-for-Eclipse/releases/"
-          HTML="$(curl -fsSL "$BASE")"
-          VER="$(printf '%s\n' "$HTML" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n1)"
-          REPO="${BASE}${VER}/"
+          set -euo pipefail
+          INDEX_URL="https://binaries.sonarsource.com/?prefix=SonarLint-for-Eclipse/releases/"
+          XML="$(curl -fsSL "$INDEX_URL")"
+          # Extract version directories like SonarLint-for-Eclipse/releases/11.17.0.83113/
+          VER="$(
+            printf '%s' "$XML" \
+            | grep -oE 'SonarLint-for-Eclipse/releases/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/' \
+            | sed -E 's#SonarLint-for-Eclipse/releases/([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/#\1#' \
+            | sort -V \
+            | tail -n1
+          )"
+          if [[ -z "${VER:-}" ]]; then
+            echo "Failed to detect latest SonarLint version from $INDEX_URL" >&2
+            exit 1
+          fi
+          REPO="https://binaries.sonarsource.com/SonarLint-for-Eclipse/releases/${VER}/"
           echo "repo=$REPO" >> "$GITHUB_OUTPUT"
 
-      - name: Download Eclipse (Linux + Windows)
+      - name: Download Eclipse (Linux + Windows via mirrors)
         if: steps.check.outputs.exists == 'false'
         id: dl
         run: |
+          set -euo pipefail
           TRAIN="${{ steps.train.outputs.train }}"
           BASE="/technology/epp/downloads/release/${TRAIN}/R"
           LNX="eclipse-java-${TRAIN}-R-linux-gtk-x86_64.tar.gz"
           WIN="eclipse-java-${TRAIN}-R-win32-x86_64.zip"
 
-          get_file () {
-            FILE="$1"; OUT="$2"
-            MIRRORS=$(curl -fsSL "https://www.eclipse.org/downloads/download.php?file=${BASE}/${FILE}&format=xml" | grep -oP '(?<=url=").*?(?=")')
+          pick_and_download () {
+            local FILE="$1" OUT="$2"
+            local XML_URL="https://www.eclipse.org/downloads/download.php?file=${BASE}/${FILE}&format=xml"
+            local MIRRORS
+            MIRRORS="$(curl -fsSL "$XML_URL" | grep -oP '(?<=url=").*?(?=")')"
             for url in $MIRRORS; do
+              echo "Trying $url"
               if curl -fSL --retry 3 --connect-timeout 20 "$url" -o "$OUT"; then
                 echo "Downloaded $OUT from $url"
                 return 0
               fi
             done
-            exit 1
+            echo "Failed to download $OUT from all mirrors" >&2
+            return 1
           }
 
-          get_file "$LNX" "$LNX"
-          get_file "$WIN" "$WIN"
+          pick_and_download "$LNX" "$LNX"
+          pick_and_download "$WIN" "$WIN"
 
-          echo "linux=$LNX" >> "$GITHUB_OUTPUT"
+          echo "linux=$LNX"   >> "$GITHUB_OUTPUT"
           echo "windows=$WIN" >> "$GITHUB_OUTPUT"
 
       - name: Unpack Linux Eclipse
         if: steps.check.outputs.exists == 'false'
         id: unpack
         run: |
+          set -euo pipefail
           tar -xzf "${{ steps.dl.outputs.linux }}"
-          ECLIPSE_DIR="$(find . -maxdepth 1 -type d -name eclipse)"
+          ECLIPSE_DIR="$(find . -maxdepth 1 -type d -name eclipse | head -n1)"
           echo "dir=$ECLIPSE_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Resolve SonarLint IU
         if: steps.check.outputs.exists == 'false'
         id: iu
         run: |
+          set -euo pipefail
           ECLIPSE="${{ steps.unpack.outputs.dir }}/eclipse"
           REPO="${{ steps.sonarlint.outputs.repo }}"
-          IU=$("$ECLIPSE" -nosplash -application org.eclipse.equinox.p2.director \
-            -repository "$REPO" -list \
+          IU="$(
+            "$ECLIPSE" -nosplash -application org.eclipse.equinox.p2.director \
+              -repository "$REPO" -list \
             | awk '/feature\.group/ {print $1}' \
-            | grep -Ei 'org\.sonarlint\.eclipse\.feature\.feature\.group' \
-            | head -n1)
+            | grep -E '^org\.sonarlint\.eclipse\.feature\.feature\.group$' \
+            | head -n1
+          )"
+          if [[ -z "${IU:-}" ]]; then
+            echo "Failed to resolve SonarLint IU from $REPO" >&2
+            exit 1
+          fi
           echo "iu=$IU" >> "$GITHUB_OUTPUT"
 
-      - name: Install SonarLint
+      - name: Install SonarLint (headless p2)
         if: steps.check.outputs.exists == 'false'
         run: |
+          set -euo pipefail
           ECLIPSE="${{ steps.unpack.outputs.dir }}/eclipse"
           "$ECLIPSE" -nosplash -application org.eclipse.equinox.p2.director \
             -repository "${{ steps.sonarlint.outputs.repo }}" \
@@ -120,6 +146,7 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         id: linuxpkg
         run: |
+          set -euo pipefail
           TRAIN="${{ steps.train.outputs.train }}"
           OUT="eclipse-java-${TRAIN}-R-linux-x86_64-sonarlint.tar.gz"
           tar -czf "$OUT" -C . eclipse
@@ -129,8 +156,10 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         id: winpkg
         run: |
+          set -euo pipefail
           TRAIN="${{ steps.train.outputs.train }}"
           mkdir win && (cd win && unzip -q "../${{ steps.dl.outputs.windows }}")
+          # copy the dropins built by the Linux install to Windows package
           cp -r "${{ steps.unpack.outputs.dir }}/dropins" "win/eclipse/"
           OUT="eclipse-java-${TRAIN}-R-win32-x86_64-sonarlint.zip"
           (cd win && zip -qr "../$OUT" eclipse)
@@ -141,8 +170,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           gh release create "${{ steps.check.outputs.tag }}" \
             "${{ steps.linuxpkg.outputs.file }}" \
             "${{ steps.winpkg.outputs.file }}" \
             --title "Eclipse Java + SonarLint – ${{ steps.train.outputs.train }}" \
-            --notes "Bundled Eclipse Java IDE with SonarLint preinstalled."
+            --notes "Eclipse Java IDE bundled with latest SonarLint (auto-discovered from S3 index)."
