@@ -3,8 +3,13 @@ set -euo pipefail
 
 eclipse="${LINUX_ECLIPSE_DIR:?}/eclipse"
 
+# Ensure SIMREL_REPO is present (from get_train.sh)
+: "${SIMREL_REPO:?Missing SIMREL_REPO; run scripts/get_train.sh first}"
+
+# Put SimRel first so core deps resolve there; others follow
 repos="$(IFS=,; echo \
-  "${SONAR_REPO:?}",\
+  "${SIMREL_REPO}",\
+"${SONAR_REPO:?}",\
 "${BASH_REPO:?}",\
 "${SQL_REPO:?}",\
 "${JENKINS_REPO:?}",\
