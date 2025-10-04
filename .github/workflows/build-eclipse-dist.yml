@@ -1,4 +1,4 @@
-name: Eclipse + SonarLint (Windows x64)
+name: Eclipse + SonarLint + de.jcup Editors (Windows x64)
 
 on:
   schedule:
@@ -12,16 +12,25 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      # de.jcup editor p2 update sites
+      BASH_REPO:     "https://de-jcup.github.io/update-site-eclipse-bash-editor/update-site/"
+      SQL_REPO:      "https://de-jcup.github.io/update-site-eclipse-sql-editor/update-site/"
+      JENKINS_REPO:  "https://de-jcup.github.io/update-site-eclipse-jenkins-editor/update-site/"
+      YAML_REPO:     "https://de-jcup.github.io/update-site-eclipse-yaml-editor/update-site/"
+      BAT_REPO:      "https://de-jcup.github.io/update-site-eclipse-batch-editor/update-site/"
+      HIJSON_REPO:   "https://de-jcup.github.io/update-site-eclipse-hijson-editor/update-site/"
+      EGRADLE_REPO:  "https://de-jcup.github.io/update-site-egradle/update-site/"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Install tools early so later steps (e.g., jq) are available
       - name: Install build tools
         run: |
           set -euo pipefail
           sudo apt-get update -y
-          sudo apt-get install -y unzip zip xz-utils p7zip-full rsync jq curl
+          sudo apt-get install -y unzip zip xz-utils p7zip-full rsync jq curl default-jre-headless
 
       - name: Get latest Eclipse SimRel train
         id: train
@@ -35,10 +44,10 @@ jobs:
           fi
           echo "train=$TRAIN" >> "$GITHUB_OUTPUT"
 
-      - name: Get latest SonarLint for Eclipse version (from GitHub Releases)
+      - name: Get latest SonarLint version (GitHub Releases)
         id: sonarlint
         env:
-          GH_TOKEN: ${{ github.token }}   # avoid rate limiting
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           JSON="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" https://api.github.com/repos/SonarSource/sonarlint-eclipse/releases/latest)"
@@ -47,9 +56,10 @@ jobs:
             echo "Failed to get SonarLint version from GitHub" >&2
             exit 1
           fi
-          ZIP_URL="https://binaries.sonarsource.com/SonarLint-for-Eclipse/releases/org.sonarlint.eclipse.site-${VER}.zip"
-          echo "version=$VER"     >> "$GITHUB_OUTPUT"
-          echo "zip_url=$ZIP_URL" >> "$GITHUB_OUTPUT"
+          # p2 repo for that exact version (not the zip site)
+          REPO="https://binaries.sonarsource.com/SonarLint-for-Eclipse/releases/${VER}/"
+          echo "version=$VER"  >> "$GITHUB_OUTPUT"
+          echo "repo=$REPO"    >> "$GITHUB_OUTPUT"
 
       - name: Decide release tag (skip if already published)
         id: decide
@@ -59,7 +69,7 @@ jobs:
           set -euo pipefail
           TRAIN="${{ steps.train.outputs.train }}"
           SL_VER="${{ steps.sonarlint.outputs.version }}"
-          TAG="eclipse-java-${TRAIN}-win64-sonarlint-${SL_VER}"
+          TAG="eclipse-java-${TRAIN}-win64-sonarlint-${SL_VER}-dejcup"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "skip=true"  >> "$GITHUB_OUTPUT"
           else
@@ -71,9 +81,9 @@ jobs:
         if: steps.decide.outputs.skip == 'true'
         run: echo "Release ${{ steps.decide.outputs.tag }} already exists. Nothing to do."
 
-      - name: Download Eclipse (Windows x64) via mirrors with retry
+      - name: Download Eclipse (Windows x64) via mirrors
         if: steps.decide.outputs.skip == 'false'
-        id: dl
+        id: dlwin
         run: |
           set -euo pipefail
           TRAIN="${{ steps.train.outputs.train }}"
@@ -103,57 +113,180 @@ jobs:
           pick_and_download "$WIN" "$WIN"
           echo "windows=$WIN" >> "$GITHUB_OUTPUT"
 
-      - name: Download SonarLint update-site ZIP
+      - name: Download Eclipse (Linux x86_64) via mirrors
         if: steps.decide.outputs.skip == 'false'
-        id: slzip
+        id: dllinux
         run: |
           set -euo pipefail
-          curl -fSL "${{ steps.sonarlint.outputs.zip_url }}" -o "sonarlint-site.zip"
-          echo "file=sonarlint-site.zip" >> "$GITHUB_OUTPUT"
+          TRAIN="${{ steps.train.outputs.train }}"
+          BASE="/technology/epp/downloads/release/${TRAIN}/R"
+          LNX="eclipse-java-${TRAIN}-R-linux-gtk-x86_64.tar.gz"
 
-      - name: Build dropins from SonarLint update-site (Windows x64 sloop only)
+          pick_and_download () {
+            local FILE="$1" OUT="$2"
+            local XML_URL="https://www.eclipse.org/downloads/download.php?file=${BASE}/${FILE}&format=xml"
+            local MIRRORS
+            MIRRORS="$(curl -fsSL "$XML_URL" | grep -oP '(?<=url=").*?(?=")')"
+            if [[ -z "${MIRRORS}" ]]; then
+              echo "No mirrors found for ${FILE}" >&2
+              exit 1
+            fi
+            for url in $MIRRORS; do
+              echo "Trying $url"
+              if curl -fSL --retry 3 --connect-timeout 20 "$url" -o "$OUT"; then
+                echo "Downloaded $OUT from $url"
+                return 0
+              fi
+            done
+            echo "Failed to download $OUT from all mirrors" >&2
+            exit 1
+          }
+
+          pick_and_download "$LNX" "$LNX"
+          echo "linux=$LNX" >> "$GITHUB_OUTPUT"
+
+      - name: Unpack Linux Eclipse
+        if: steps.decide.outputs.skip == 'false'
+        id: unpacklinux
+        run: |
+          set -euo pipefail
+          tar -xzf "${{ steps.dllinux.outputs.linux }}"
+          ECLIPSE_DIR="$(find . -maxdepth 1 -type d -name eclipse | head -n1)"
+          if [[ -z "${ECLIPSE_DIR:-}" ]]; then
+            echo "Eclipse directory not found after extraction" >&2
+            exit 1
+          fi
+          echo "dir=$ECLIPSE_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve feature IUs from p2 repositories
+        if: steps.decide.outputs.skip == 'false'
+        id: resolve
+        run: |
+          set -euo pipefail
+          ECLIPSE="${{ steps.unpacklinux.outputs.dir }}/eclipse"
+
+          resolve_iu() {
+            local repo="$1"
+            local pattern="$2"
+            "$ECLIPSE" -nosplash -application org.eclipse.equinox.p2.director \
+              -repository "$repo" -list \
+            | awk '/feature\.group/ {print $1}' \
+            | grep -Ei "$pattern" | head -n1
+          }
+
+          SONAR_REPO="${{ steps.sonarlint.outputs.repo }}"
+          SONAR_IU="$(resolve_iu "$SONAR_REPO" '^org\.sonarlint\.eclipse\.feature\.feature\.group$')"
+
+          BASH_IU="$(resolve_iu "${{ env.BASH_REPO }}" 'basheditor.*feature\.group')"
+          SQL_IU="$(resolve_iu "${{ env.SQL_REPO }}" 'sqleditor.*feature\.group')"
+          JENKINS_IU="$(resolve_iu "${{ env.JENKINS_REPO }}" 'jenkins.*editor.*feature\.group')"
+          YAML_IU="$(resolve_iu "${{ env.YAML_REPO }}" 'yaml.*editor.*feature\.group')"
+          BAT_IU="$(resolve_iu "${{ env.BAT_REPO }}" '(batch|bat).*editor.*feature\.group')"
+          HIJSON_IU="$(resolve_iu "${{ env.HIJSON_REPO }}" '(hijson|json).*feature\.group')"
+          EGRADLE_IU="$(resolve_iu "${{ env.EGRADLE_REPO }}" 'egradle.*feature\.group')"
+
+          echo "Resolved IUs:"
+          printf '  %s\n' \
+            "SONAR_REPO=$SONAR_REPO" \
+            "SONAR_IU=$SONAR_IU" \
+            "BASH_IU=$BASH_IU" \
+            "SQL_IU=$SQL_IU" \
+            "JENKINS_IU=$JENKINS_IU" \
+            "YAML_IU=$YAML_IU" \
+            "BAT_IU=$BAT_IU" \
+            "HIJSON_IU=$HIJSON_IU" \
+            "EGRADLE_IU=$EGRADLE_IU"
+
+          for v in SONAR_IU BASH_IU SQL_IU JENKINS_IU YAML_IU BAT_IU HIJSON_IU EGRADLE_IU; do
+            [[ -n "${!v}" ]] || { echo "Failed to resolve IU for $v" >&2; exit 1; }
+          done
+
+          {
+            echo "SONAR_REPO=$SONAR_REPO"
+            echo "SONAR_IU=$SONAR_IU"
+            echo "BASH_IU=$BASH_IU"
+            echo "SQL_IU=$SQL_IU"
+            echo "JENKINS_IU=$JENKINS_IU"
+            echo "YAML_IU=$YAML_IU"
+            echo "BAT_IU=$BAT_IU"
+            echo "HIJSON_IU=$HIJSON_IU"
+            echo "EGRADLE_IU=$EGRADLE_IU"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install plugins into Linux Eclipse (p2 director)
+        if: steps.decide.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          ECLIPSE="${{ steps.unpacklinux.outputs.dir }}/eclipse"
+
+          REPOS=$(IFS=,; echo \
+            "${{ steps.resolve.outputs.SONAR_REPO }}",\
+"${{ env.BASH_REPO }}",\
+"${{ env.SQL_REPO }}",\
+"${{ env.JENKINS_REPO }}",\
+"${{ env.YAML_REPO }}",\
+"${{ env.BAT_REPO }}",\
+"${{ env.HIJSON_REPO }}",\
+"${{ env.EGRADLE_REPO }}")
+
+          IUS=$(IFS=,; echo \
+            "${{ steps.resolve.outputs.SONAR_IU }}",\
+"${{ steps.resolve.outputs.BASH_IU }}",\
+"${{ steps.resolve.outputs.SQL_IU }}",\
+"${{ steps.resolve.outputs.JENKINS_IU }}",\
+"${{ steps.resolve.outputs.YAML_IU }}",\
+"${{ steps.resolve.outputs.BAT_IU }}",\
+"${{ steps.resolve.outputs.HIJSON_IU }}",\
+"${{ steps.resolve.outputs.EGRADLE_IU }}")
+
+          "$ECLIPSE" -nosplash -application org.eclipse.equinox.p2.director \
+            -repository "$REPOS" \
+            -installIU "$IUS" \
+            -profile SDKProfile \
+            -profileProperties org.eclipse.update.install.features=true \
+            -destination "$(dirname "$ECLIPSE")" \
+            -roaming
+
+      - name: Create portable dropins from installed plugins
         if: steps.decide.outputs.skip == 'false'
         id: dropins
         run: |
           set -euo pipefail
-          # Unzip SonarLint p2 update site
-          mkdir -p sl_site && unzip -q "${{ steps.slzip.outputs.file }}" -d sl_site
+          ECLIPSE_ROOT="${{ steps.unpacklinux.outputs.dir }}"
+          mkdir -p dropins/custom/eclipse/plugins dropins/custom/eclipse/features
+          rsync -a "${ECLIPSE_ROOT}/plugins/"  "dropins/custom/eclipse/plugins/"
+          rsync -a "${ECLIPSE_ROOT}/features/" "dropins/custom/eclipse/features/"
+          echo "dir=$(pwd)/dropins" >> "$GITHUB_OUTPUT"
 
-          # Prepare a portable dropins layout
-          mkdir -p dropins/custom/eclipse/features dropins/custom/eclipse/plugins
-          rsync -a sl_site/features/ dropins/custom/eclipse/features/
-          rsync -a sl_site/plugins/  dropins/custom/eclipse/plugins/
-
-          # Keep only Windows x64 sloop jar, expand it into a same-named directory, remove other sloop jars
+      - name: Prune & expand SonarLint Sloop (Windows x64 only)
+        if: steps.decide.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
           PLUGDIR="dropins/custom/eclipse/plugins"
           SLOOP_WIN="$(ls "$PLUGDIR"/org.sonarlint.eclipse.sloop.windows.x64_*.jar | head -n1 || true)"
           if [[ -z "${SLOOP_WIN:-}" ]]; then
-            echo "Windows x64 sloop jar not found in SonarLint site" >&2
+            echo "Windows x64 sloop jar not found after p2 install" >&2
             exit 1
           fi
           BASENAME="$(basename "$SLOOP_WIN")"
           TARGET_DIR="${PLUGDIR}/${BASENAME%.jar}"
           mkdir -p "$TARGET_DIR"
           unzip -q "$SLOOP_WIN" -d "$TARGET_DIR"
-          rm -f "$SLOOP_WIN"   # <-- delete the Windows x64 sloop JAR after extracting
+          rm -f "$SLOOP_WIN"
+          # Remove all other platform sloop jars
+          find "$PLUGDIR" -maxdepth 1 -type f -name 'org.sonarlint.eclipse.sloop.*.jar' -print -delete || true
 
-          # Remove all other sloop jars that don't match windows x64
-          find "$PLUGDIR" -maxdepth 1 -type f -name 'org.sonarlint.eclipse.sloop.*.jar' ! -name "$BASENAME" -print -delete
-
-          echo "dir=$(pwd)/dropins" >> "$GITHUB_OUTPUT"
-
-      - name: Inject dropins into Windows Eclipse & repackage (Windows x64 only)
+      - name: Inject dropins into Windows Eclipse & repackage
         if: steps.decide.outputs.skip == 'false'
         id: packwin
         run: |
           set -euo pipefail
           TRAIN="${{ steps.train.outputs.train }}"
-          WIN_ZIP="${{ steps.dl.outputs.windows }}"
+          WIN_ZIP="${{ steps.dlwin.outputs.windows }}"
           mkdir win && (cd win && unzip -q "../$WIN_ZIP")
-          # Add our dropins
           mkdir -p "win/eclipse/dropins"
-          cp -r "${{ steps.dropins.outputs.dir }}/custom" "win/eclipse/dropins/"
-          OUT="eclipse-java-${TRAIN}-R-win32-x86_64-sonarlint.zip"
+          cp -r "dropins/custom" "win/eclipse/dropins/"
+          OUT="eclipse-java-${TRAIN}-R-win32-x86_64-with-plugins.zip"
           (cd win && zip -qr "../$OUT" eclipse)
           echo "file=$OUT" >> "$GITHUB_OUTPUT"
 
@@ -162,11 +295,16 @@ jobs:
         run: |
           set -euo pipefail
           cat > RELEASE_NOTES.md <<'EOF'
-          Eclipse IDE for Java Developers (Windows x64) bundled with SonarLint ${{ steps.sonarlint.outputs.version }} via dropins.
+          Eclipse IDE for Java Developers (Windows x64) bundled via dropins:
 
+          - SonarLint ${{ steps.sonarlint.outputs.version }} (versioned p2 repo)
+          - de.jcup editors: Bash, SQL, YAML, Jenkins, Batch (BAT), HiJSON, EGradle
+
+          Sloop handling:
+          - Kept only the Windows x64 sloop (extracted to a same-named folder), deleted that JAR, and removed other platform sloop JARs.
+
+          Build details:
           - Eclipse train: ${{ steps.train.outputs.train }}
-          - SonarLint update-site ZIP: ${{ steps.sonarlint.outputs.zip_url }}
-          - Sloop handling: kept Windows x64 sloop JAR, extracted into a folder of the same name, deleted that JAR, and removed other sloop JARs.
 
           Usage:
           - Unzip and run `eclipse.exe`
@@ -178,7 +316,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TITLE="Eclipse Java (Windows x64) + SonarLint – ${{ steps.train.outputs.train }} (SonarLint ${{ steps.sonarlint.outputs.version }})"
+          TITLE="Eclipse Java (Windows x64) + SonarLint + de.jcup – ${{ steps.train.outputs.train }} (SonarLint ${{ steps.sonarlint.outputs.version }})"
           gh release create "${{ steps.decide.outputs.tag }}" \
             "${{ steps.packwin.outputs.file }}" \
             --title "$TITLE" \
