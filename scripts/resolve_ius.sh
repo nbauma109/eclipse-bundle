@@ -12,22 +12,23 @@ list_ius() {
 }
 
 find_iu_from_list() {
-  # stdin = full IU list, $2.. = patterns to try (regex for IU id without '=version')
+  # stdin = full IU list, args = patterns to try (match IU id WITHOUT '=version')
   local iu_list; iu_list="$(cat)"
   shift || true
-  local pat
+  local pat found
   for pat in "$@"; do
-    local found
-    found="$(printf '%s\n' "$iu_list" \
-      | awk '/feature\.group/ {print $1}' \
-      | sed -E 's/=.*$//' \        # <-- strip '=version'
-      | grep -E "^${pat}$" || true)"
+    found="$(
+      printf '%s\n' "$iu_list" \
+        | awk '/feature\.group/ {print $1}' \
+        | sed -E 's/=.*$//' \
+        | grep -E "^${pat}$" || true
+    )"
     if [[ -n "$found" ]]; then
       printf '%s' "$found" | head -n1
       return 0
     fi
   done
-  echo "---- DEBUG: first 50 feature IUs (ids only) ----" >&2
+  echo "---- DEBUG: first 50 feature IU ids (stripped) ----" >&2
   printf '%s\n' "$iu_list" \
     | awk '/feature\.group/ {print $1}' \
     | sed -E 's/=.*$//' \
@@ -60,7 +61,7 @@ EGRADLE_LIST="$(list_ius "$EGRADLE_REPO")"
 
 log "Resolving IU IDs..."
 
-# SonarLint (exact first, then a tolerant fallback)
+# SonarLint
 SONAR_IU="$(
   printf '%s' "$SONAR_LIST" | find_iu_from_list \
     'org\.sonarlint\.eclipse\.feature\.feature\.group' \
@@ -104,7 +105,7 @@ EGRADLE_IU="$(
     'de\.jcup\..*egradle.*feature\.group'
 )"
 
-# Validate + export for the next step
+# Validate + export for next steps
 for v in SONAR_IU BASH_IU SQL_IU JENKINS_IU YAML_IU BAT_IU HIJSON_IU EGRADLE_IU; do
   if [[ -z "${!v:-}" ]]; then
     err "Failed to resolve $v (see debug above)"
@@ -113,14 +114,15 @@ for v in SONAR_IU BASH_IU SQL_IU JENKINS_IU YAML_IU BAT_IU HIJSON_IU EGRADLE_IU;
   echo "$v=${!v}" >> "$GITHUB_ENV"
 done
 
-echo "SONAR_REPO=$SONAR_REPO"   >> "$GITHUB_ENV"
-echo "BASH_REPO=$BASH_REPO"     >> "$GITHUB_ENV"
-echo "SQL_REPO=$SQL_REPO"       >> "$GITHUB_ENV"
-echo "JENKINS_REPO=$JENKINS_REPO" >> "$GITHUB_ENV"
-echo "YAML_REPO=$YAML_REPO"     >> "$GITHUB_ENV"
-echo "BAT_REPO=$BAT_REPO"       >> "$GITHUB_ENV"
-echo "HIJSON_REPO=$HIJSON_REPO" >> "$GITHUB_ENV"
-echo "EGRADLE_REPO=$EGRADLE_REPO" >> "$GITHUB_ENV"
+# Re-export repos too
+echo "SONAR_REPO=$SONAR_REPO"       >> "$GITHUB_ENV"
+echo "BASH_REPO=$BASH_REPO"         >> "$GITHUB_ENV"
+echo "SQL_REPO=$SQL_REPO"           >> "$GITHUB_ENV"
+echo "JENKINS_REPO=$JENKINS_REPO"   >> "$GITHUB_ENV"
+echo "YAML_REPO=$YAML_REPO"         >> "$GITHUB_ENV"
+echo "BAT_REPO=$BAT_REPO"           >> "$GITHUB_ENV"
+echo "HIJSON_REPO=$HIJSON_REPO"     >> "$GITHUB_ENV"
+echo "EGRADLE_REPO=$EGRADLE_REPO"   >> "$GITHUB_ENV"
 
 log "Resolved IUs:
   SONAR_IU=$SONAR_IU
