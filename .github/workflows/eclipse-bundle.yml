@@ -1,0 +1,284 @@
+name: Build Eclipse Java distro with plugins
+
+on:
+  schedule:
+    # Run daily at 03:30 UTC
+    - cron: '30 3 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write  # required to create releases
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      # Update site URLs (stable “official releases” repos)
+      SONAR_REPO: https://eclipse-uc.sonarlint.org
+      SPOTBUGS_REPO: https://spotbugs.github.io/eclipse/
+      # de.jcup editors (Albert Tregnaghi)
+      BASH_REPO: https://de-jcup.github.io/update-site-eclipse-bash-editor/update-site/
+      SQL_REPO: https://de-jcup.github.io/update-site-eclipse-sql-editor/update-site/
+      JENKINS_REPO: https://de-jcup.github.io/update-site-eclipse-jenkins-editor/update-site/
+      YAML_REPO: https://de-jcup.github.io/update-site-eclipse-yaml-editor/update-site/
+      BAT_REPO: https://de-jcup.github.io/update-site-eclipse-batch-editor/update-site/
+      HIJSON_REPO: https://de-jcup.github.io/update-site-eclipse-hijson-editor/update-site/
+      EGRADLE_REPO: https://de-jcup.github.io/update-site-egradle/update-site/
+
+    steps:
+      - name: Checkout (no source code needed, but keeps GITHUB_SHA etc.)
+        uses: actions/checkout@v4
+
+      - name: Get latest Eclipse SimRel train (e.g., 2025-09)
+        id: train
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Read the EPP releases page and grab the newest "YYYY-MM R" entry
+          PAGE="$(curl -fsSL https://www.eclipse.org/downloads/packages/release)"
+          TRAIN="$(printf '%s' "$PAGE" | grep -Eo '[0-9]{4}-[0-9]{2} R' | head -n1 | cut -d' ' -f1)"
+          if [[ -z "${TRAIN:-}" ]]; then
+            echo "Could not detect latest train" >&2
+            exit 1
+          fi
+          echo "train=$TRAIN" >> "$GITHUB_OUTPUT"
+
+      - name: Decide if we already released this train
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TRAIN="${{ steps.train.outputs.train }}"
+          TAG="eclipse-java-${TRAIN}-with-plugins"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop early if release already exists
+        if: steps.decide.outputs.skip == 'true'
+        run: |
+          echo "Release ${{ steps.decide.outputs.tag }} already exists. Nothing to do."
+
+      - name: Prepare build tools
+        if: steps.decide.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y jq unzip p7zip-full xz-utils
+          echo "Using Java:"
+          java -version || true
+
+      - name: Download Eclipse packages (Linux & Windows)
+        if: steps.decide.outputs.skip == 'false'
+        id: dl
+        run: |
+          set -euo pipefail
+          TRAIN="${{ steps.train.outputs.train }}"
+          BASE="/technology/epp/downloads/release/${TRAIN}/R"
+          # Linux (tar.gz)
+          LNX_FILE="eclipse-java-${TRAIN}-R-linux-gtk-x86_64.tar.gz"
+          LNX_URL="https://www.eclipse.org/downloads/download.php?file=${BASE}/${LNX_FILE}"
+          # Windows (zip)
+          WIN_FILE="eclipse-java-${TRAIN}-R-win32-x86_64.zip"
+          WIN_URL="https://www.eclipse.org/downloads/download.php?file=${BASE}/${WIN_FILE}"
+
+          curl -fSL "$LNX_URL" -o "$LNX_FILE"
+          curl -fSL "$WIN_URL" -o "$WIN_FILE"
+
+          echo "linux=$LNX_FILE" >> "$GITHUB_OUTPUT"
+          echo "windows=$WIN_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Unpack Linux Eclipse (we’ll use it to install plugins headlessly)
+        if: steps.decide.outputs.skip == 'false'
+        id: unpack
+        run: |
+          set -euo pipefail
+          tar -xzf "${{ steps.dl.outputs.linux }}"
+          # Find extracted directory (e.g., 'eclipse')
+          ECLIPSE_DIR="$(find . -maxdepth 1 -type d -name 'eclipse' | head -n1)"
+          echo "eclipse_dir=$ECLIPSE_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve feature IDs from update sites
+        if: steps.decide.outputs.skip == 'false'
+        id: resolve
+        run: |
+          set -euo pipefail
+          ECLIPSE="${{ steps.unpack.outputs.eclipse_dir }}/eclipse"
+
+          resolve_iu() {
+            local repo="$1"; shift
+            local pattern="$1"; shift
+            # List installable units in repo and pick first matching *.feature.group by pattern
+            "$ECLIPSE" \
+              -nosplash \
+              -application org.eclipse.equinox.p2.director \
+              -repository "$repo" \
+              -list \
+              | awk '/feature\.group/ {print $1}' \
+              | grep -Ei "$pattern" \
+              | head -n1
+          }
+
+          SONAR_IU="$(resolve_iu "${{ env.SONAR_REPO }}" 'sonar|sonarlint|sonarqube')"
+          SPOT_IU="$(resolve_iu "${{ env.SPOTBUGS_REPO }}" 'spotbugs')"
+          BASH_IU="$(resolve_iu "${{ env.BASH_REPO }}" 'basheditor')"
+          SQL_IU="$(resolve_iu "${{ env.SQL_REPO }}" 'sqleditor')"
+          JENKINS_IU="$(resolve_iu "${{ env.JENKINS_REPO }}" 'jenkins.*editor')"
+          YAML_IU="$(resolve_iu "${{ env.YAML_REPO }}" 'yaml.*editor')"
+          BAT_IU="$(resolve_iu "${{ env.BAT_REPO }}" 'batch.*editor|bat.*editor')"
+          HIJSON_IU="$(resolve_iu "${{ env.HIJSON_REPO }}" 'hijson')"
+          EGRADLE_IU="$(resolve_iu "${{ env.EGRADLE_REPO }}" 'egradle')"
+
+          echo "Resolved:"
+          printf '  %s\n' \
+            "SONAR_IU=$SONAR_IU" \
+            "SPOT_IU=$SPOT_IU" \
+            "BASH_IU=$BASH_IU" \
+            "SQL_IU=$SQL_IU" \
+            "JENKINS_IU=$JENKINS_IU" \
+            "YAML_IU=$YAML_IU" \
+            "BAT_IU=$BAT_IU" \
+            "HIJSON_IU=$HIJSON_IU" \
+            "EGRADLE_IU=$EGRADLE_IU"
+
+          # Basic sanity check
+          for v in SONAR_IU SPOT_IU BASH_IU SQL_IU JENKINS_IU YAML_IU BAT_IU HIJSON_IU EGRADLE_IU; do
+            [[ -n "${!v}" ]] || { echo "Failed to resolve IU for $v" >&2; exit 1; }
+          done
+
+          {
+            echo "SONAR_IU=$SONAR_IU"
+            echo "SPOT_IU=$SPOT_IU"
+            echo "BASH_IU=$BASH_IU"
+            echo "SQL_IU=$SQL_IU"
+            echo "JENKINS_IU=$JENKINS_IU"
+            echo "YAML_IU=$YAML_IU"
+            echo "BAT_IU=$BAT_IU"
+            echo "HIJSON_IU=$HIJSON_IU"
+            echo "EGRADLE_IU=$EGRADLE_IU"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install plugins into Linux Eclipse using p2 director
+        if: steps.decide.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          ECLIPSE="${{ steps.unpack.outputs.eclipse_dir }}/eclipse"
+
+          REPOS=$(IFS=, ; echo \
+            "${{ env.SONAR_REPO }}",\
+"${{ env.SPOTBUGS_REPO }}",\
+"${{ env.BASH_REPO }}",\
+"${{ env.SQL_REPO }}",\
+"${{ env.JENKINS_REPO }}",\
+"${{ env.YAML_REPO }}",\
+"${{ env.BAT_REPO }}",\
+"${{ env.HIJSON_REPO }}",\
+"${{ env.EGRADLE_REPO }}")
+
+          IUS=$(IFS=, ; echo \
+            "${{ steps.resolve.outputs.SONAR_IU }}",\
+"${{ steps.resolve.outputs.SPOT_IU }}",\
+"${{ steps.resolve.outputs.BASH_IU }}",\
+"${{ steps.resolve.outputs.SQL_IU }}",\
+"${{ steps.resolve.outputs.JENKINS_IU }}",\
+"${{ steps.resolve.outputs.YAML_IU }}",\
+"${{ steps.resolve.outputs.BAT_IU }}",\
+"${{ steps.resolve.outputs.HIJSON_IU }}",\
+"${{ steps.resolve.outputs.EGRADLE_IU }}")
+
+          "$ECLIPSE" -nosplash -application org.eclipse.equinox.p2.director \
+            -repository "$REPOS" \
+            -installIU "$IUS" \
+            -profile SDKProfile \
+            -profileProperties org.eclipse.update.install.features=true \
+            -destination "$(dirname "$ECLIPSE")" \
+            -roaming
+
+      - name: Create portable dropins from installed plugins
+        if: steps.decide.outputs.skip == 'false'
+        id: dropins
+        run: |
+          set -euo pipefail
+          ECLIPSE_ROOT="${{ steps.unpack.outputs.eclipse_dir }}"
+          # Build a dropins layout that we can copy into any platform package
+          mkdir -p dropins/custom/eclipse/plugins dropins/custom/eclipse/features
+          # Copy just the *new* features/plugins by comparing with a pristine listing
+          # For simplicity, we copy all installed features/plugins; this is fine for distribution.
+          rsync -a "${ECLIPSE_ROOT}/plugins/" "dropins/custom/eclipse/plugins/"
+          rsync -a "${ECLIPSE_ROOT}/features/" "dropins/custom/eclipse/features/"
+          echo "dropins_dir=$(pwd)/dropins" >> "$GITHUB_OUTPUT"
+
+      - name: Repack Linux distribution (with dropins)
+        if: steps.decide.outputs.skip == 'false'
+        id: packlinux
+        run: |
+          set -euo pipefail
+          TRAIN="${{ steps.train.outputs.train }}"
+          ECLIPSE_ROOT="${{ steps.unpack.outputs.eclipse_dir }}"
+          cp -r "${{ steps.dropins.outputs.dropins_dir }}/custom" "${ECLIPSE_ROOT}/dropins/"
+          OUT="eclipse-java-${TRAIN}-R-linux-x86_64-with-plugins.tar.gz"
+          tar -czf "$OUT" -C "$(dirname "$ECLIPSE_ROOT")" "$(basename "$ECLIPSE_ROOT")"
+          echo "linux_out=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Windows distribution (inject dropins and re-zip)
+        if: steps.decide.outputs.skip == 'false'
+        id: packwin
+        run: |
+          set -euo pipefail
+          TRAIN="${{ steps.train.outputs.train }}"
+          WIN_ZIP="${{ steps.dl.outputs.windows }}"
+          mkdir win && (cd win && unzip -q "../$WIN_ZIP")
+          # Inject dropins
+          cp -r "${{ steps.dropins.outputs.dropins_dir }}/custom" "win/eclipse/dropins/"
+          # Zip back
+          OUT="eclipse-java-${TRAIN}-R-win32-x86_64-with-plugins.zip"
+          (cd win && zip -qr "../$OUT" eclipse)
+          echo "windows_out=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes
+        if: steps.decide.outputs.skip == 'false'
+        id: notes
+        run: |
+          set -euo pipefail
+          TRAIN="${{ steps.train.outputs.train }}"
+          cat > RELEASE_NOTES.md << 'EOF'
+          # Eclipse IDE for Java Developers – bundled plugins
+
+          This release bundles the official Eclipse EPP package **with preinstalled plugins** so you don’t need Marketplace or manual update sites.
+
+          **Included repositories / plugins**
+          - SonarQube for IDE (formerly SonarLint)
+          - SpotBugs Eclipse plugin
+          - de.jcup editors: Bash, SQL, Jenkins, YAML, Batch (BAT), HiJSON (JSON), EGradle
+
+          **How to use**
+          - Linux: extract the `.tar.gz` and run `eclipse`.
+          - Windows: unzip and run `eclipse.exe`.
+          - No extra trust/certificates steps needed. Plugins are already there via `dropins/`.
+
+          **Notes**
+          - Built automatically from the latest SimRel train.
+          - If you still see unsigned content prompts, ensure you didn’t mix this with an existing workspace-install that has different sites enabled.
+
+          EOF
+          echo "path=RELEASE_NOTES.md" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        if: steps.decide.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.decide.outputs.tag }}"
+          NAME="Eclipse Java with plugins – ${{ steps.train.outputs.train }}"
+          gh release create "$TAG" \
+            "${{ steps.packlinux.outputs.linux_out }}" \
+            "${{ steps.packwin.outputs.windows_out }}" \
+            --title "$NAME" \
+            --notes-file "${{ steps.notes.outputs.path }}"
