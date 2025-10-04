@@ -41,7 +41,7 @@ jobs:
             exit 1
           fi
           ZIP_URL="https://binaries.sonarsource.com/SonarLint-for-Eclipse/releases/org.sonarlint.eclipse.site-${VER}.zip"
-          echo "version=$VER"   >> "$GITHUB_OUTPUT"
+          echo "version=$VER"     >> "$GITHUB_OUTPUT"
           echo "zip_url=$ZIP_URL" >> "$GITHUB_OUTPUT"
 
       - name: Decide release tag (skip if already published)
@@ -120,7 +120,7 @@ jobs:
           fi
           echo "dir=$ECLIPSE_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Download SonarLint update-site zip
+      - name: Download SonarLint update-site ZIP
         if: steps.decide.outputs.skip == 'false'
         id: slzip
         run: |
@@ -153,7 +153,7 @@ jobs:
 
       - name: Inject dropins into Windows Eclipse & repackage
         if: steps.decide.outputs.skip == 'false'
-        id: packwin
+        id: winpkg
         run: |
           set -euo pipefail
           TRAIN="${{ steps.train.outputs.train }}"
@@ -164,6 +164,20 @@ jobs:
           (cd win && zip -qr "../$OUT" eclipse)
           echo "file=$OUT" >> "$GITHUB_OUTPUT"
 
+      - name: Write release notes
+        if: steps.decide.outputs.skip == 'false'
+        run: |
+          cat > RELEASE_NOTES.md <<'EOF'
+          Eclipse IDE for Java Developers bundled with SonarLint ${{ steps.sonarlint.outputs.version }} via dropins.
+
+          - Eclipse train: ${{ steps.train.outputs.train }}
+          - SonarLint update site ZIP: ${{ steps.sonarlint.outputs.zip_url }}
+
+          Usage:
+          - Linux: extract the .tar.gz and run `eclipse`
+          - Windows: unzip and run `eclipse.exe`
+          EOF
+
       - name: Publish GitHub Release
         if: steps.decide.outputs.skip == 'false'
         env:
@@ -173,6 +187,6 @@ jobs:
           TITLE="Eclipse Java + SonarLint – ${{ steps.train.outputs.train }} (SonarLint ${{ steps.sonarlint.outputs.version }})"
           gh release create "${{ steps.decide.outputs.tag }}" \
             "${{ steps.packlinux.outputs.file }}" \
-            "${{ steps.packwin.outputs.file }}" \
+            "${{ steps.winpkg.outputs.file }}" \
             --title "$TITLE" \
-            --notes "Eclipse IDE for Java Developers bundled with SonarLint ${ { steps.sonarlint.outputs.version } } via dropins."
+            --notes-file RELEASE_NOTES.md
