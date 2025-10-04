@@ -6,12 +6,7 @@ json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" https://api.github.c
 ver="$(printf '%s' "$json" | jq -r '.tag_name' | sed 's/^v//')"
 [ -n "${ver:-}" ] && [ "$ver" != "null" ] || { err "Failed to get SonarLint version from GitHub"; exit 1; }
 
-repo="https://binaries.sonarsource.com/SonarLint-for-Eclipse/releases/${ver}/"
-
 echo "SONARLINT_VERSION=$ver" >> "$GITHUB_ENV"
-echo "SONAR_REPO=$repo"       >> "$GITHUB_ENV"
-
 echo "version=$ver"           >> "$GITHUB_OUTPUT"
-echo "repo=$repo"             >> "$GITHUB_OUTPUT"
 
-log "SonarLint version: $ver ; repo: $repo"
+log "SonarLint version: $ver"

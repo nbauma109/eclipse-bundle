@@ -18,7 +18,7 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y unzip zip xz-utils p7zip-full rsync jq curl default-jre-headless
+          sudo apt-get install -y unzip zip jq curl git
 
       - name: Make scripts executable
         run: chmod +x scripts/*.sh
@@ -37,44 +37,42 @@ jobs:
         id: decide
         env:
           GH_TOKEN: ${{ github.token }}
-        run: scripts/decide_tag.sh
+        run: scripts/decide_tag_gitonly.sh
 
       - name: Stop if release exists
         if: env.SKIP == 'true'
         run: echo "Release ${TAG} already exists — skipping."
 
-      - name: Download Eclipse (Windows & Linux)
+      - name: Download Eclipse (Windows x64)
         if: env.SKIP != 'true'
-        run: scripts/download_eclipse.sh
+        run: scripts/download_eclipse_windows.sh
 
-      - name: Unpack Linux Eclipse (for p2)
+      - name: Unpack Windows Eclipse
         if: env.SKIP != 'true'
-        run: scripts/unpack_linux.sh
+        run: |
+          mkdir -p win && (cd win && unzip -q "../${WIN_ZIP}")
+          echo "WIN_ECLIPSE_DIR=$(realpath win/eclipse)" >> "$GITHUB_ENV"
 
-      - name: Resolve IUs
+      - name: Install SonarLint into dropins (zip site)
         if: env.SKIP != 'true'
-        run: scripts/resolve_ius.sh
+        run: scripts/install_sonarlint_dropins.sh
+        env:
+          SONARLINT_VERSION: ${{ steps.sonarlint.outputs.version }}
+          DROPINS_ROOT: ${{ env.WIN_ECLIPSE_DIR }}/dropins/custom/eclipse
 
-      - name: Install plugins via p2
+      - name: Install de.jcup editors from git update-sites
         if: env.SKIP != 'true'
-        run: scripts/p2_install.sh
-
-      - name: Build dropins/
-        if: env.SKIP != 'true'
-        run: scripts/build_dropins.sh
-
-      - name: Prune & expand SonarLint sloop (Windows x64)
-        if: env.SKIP != 'true'
-        run: scripts/prune_sloop_win.sh
+        run: scripts/install_dejcup_from_git.sh
+        env:
+          DROPINS_ROOT: ${{ env.WIN_ECLIPSE_DIR }}/dropins/custom/eclipse
 
       - name: Package Windows distro
         if: env.SKIP != 'true'
-        id: packwin
         run: scripts/pack_windows.sh
 
       - name: Write release notes
         if: env.SKIP != 'true'
-        run: scripts/write_notes.sh
+        run: scripts/write_notes_gitonly.sh
 
       - name: Publish release
         if: env.SKIP != 'true'
