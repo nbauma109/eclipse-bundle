@@ -6,38 +6,37 @@ eclipse="${LINUX_ECLIPSE_DIR:?}/eclipse"
 
 list_ius() {
   local repo="$1"
-  # List available IUs (features) in this repo
   "$eclipse" -nosplash -application org.eclipse.equinox.p2.director \
     -repository "$repo" -list \
     || { err "p2 director -list failed for $repo"; return 1; }
 }
 
 find_iu_from_list() {
-  # $1 = iu list (stdin), $2.. = patterns to try
+  # stdin = full IU list, $2.. = patterns to try (regex for IU id without '=version')
   local iu_list; iu_list="$(cat)"
   shift || true
   local pat
   for pat in "$@"; do
-    # search safely; don't trip pipefail if no match
     local found
     found="$(printf '%s\n' "$iu_list" \
       | awk '/feature\.group/ {print $1}' \
+      | sed -E 's/=.*$//' \        # <-- strip '=version'
       | grep -E "^${pat}$" || true)"
     if [[ -n "$found" ]]; then
       printf '%s' "$found" | head -n1
       return 0
     fi
   done
-  # If we’re here, not found; print a short debug list
-  echo "---- DEBUG: first 50 feature IUs in repo ----" >&2
+  echo "---- DEBUG: first 50 feature IUs (ids only) ----" >&2
   printf '%s\n' "$iu_list" \
     | awk '/feature\.group/ {print $1}' \
+    | sed -E 's/=.*$//' \
     | head -n50 >&2 || true
   echo "---- DEBUG END ----" >&2
   return 1
 }
 
-# p2 sites (fixed / overridable via env)
+# p2 sites (fixed / overridable)
 BASH_REPO="${BASH_REPO:-https://de-jcup.github.io/update-site-eclipse-bash-editor/update-site/}"
 SQL_REPO="${SQL_REPO:-https://de-jcup.github.io/update-site-eclipse-sql-editor/update-site/}"
 JENKINS_REPO="${JENKINS_REPO:-https://de-jcup.github.io/update-site-eclipse-jenkins-editor/update-site/}"
@@ -47,7 +46,6 @@ HIJSON_REPO="${HIJSON_REPO:-https://de-jcup.github.io/update-site-eclipse-hijson
 EGRADLE_REPO="${EGRADLE_REPO:-https://de-jcup.github.io/update-site-egradle/update-site/}"
 SONAR_REPO="${SONAR_REPO:?}"
 
-# Cache the IU lists up front
 log "Listing IUs from SonarLint repo..."
 SONAR_LIST="$(list_ius "$SONAR_REPO")"
 
@@ -60,10 +58,9 @@ BAT_LIST="$(list_ius "$BAT_REPO")"
 HIJSON_LIST="$(list_ius "$HIJSON_REPO")"
 EGRADLE_LIST="$(list_ius "$EGRADLE_REPO")"
 
-# Find IU IDs (try exact → broader patterns)
 log "Resolving IU IDs..."
 
-# SonarLint
+# SonarLint (exact first, then a tolerant fallback)
 SONAR_IU="$(
   printf '%s' "$SONAR_LIST" | find_iu_from_list \
     'org\.sonarlint\.eclipse\.feature\.feature\.group' \
@@ -107,7 +104,7 @@ EGRADLE_IU="$(
     'de\.jcup\..*egradle.*feature\.group'
 )"
 
-# Validate and export
+# Validate + export for the next step
 for v in SONAR_IU BASH_IU SQL_IU JENKINS_IU YAML_IU BAT_IU HIJSON_IU EGRADLE_IU; do
   if [[ -z "${!v:-}" ]]; then
     err "Failed to resolve $v (see debug above)"
@@ -116,7 +113,6 @@ for v in SONAR_IU BASH_IU SQL_IU JENKINS_IU YAML_IU BAT_IU HIJSON_IU EGRADLE_IU;
   echo "$v=${!v}" >> "$GITHUB_ENV"
 done
 
-# Also (re)export repos so the next script has them for -repository
 echo "SONAR_REPO=$SONAR_REPO"   >> "$GITHUB_ENV"
 echo "BASH_REPO=$BASH_REPO"     >> "$GITHUB_ENV"
 echo "SQL_REPO=$SQL_REPO"       >> "$GITHUB_ENV"
