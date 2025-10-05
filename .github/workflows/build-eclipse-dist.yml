@@ -66,10 +66,10 @@ jobs:
           SONARLINT_VERSION: ${{ steps.sonarlint.outputs.version }}
           DROPINS_ROOT: ${{ env.WIN_ECLIPSE_DIR }}/dropins/custom/eclipse
 
-      # 5) Install de.jcup editors (latest) via GitHub tarballs (no git clone)
-      - name: Install de.jcup editors (tarballs, latest)
+      # 5) Install de.jcup editors (latest) via git clone
+      - name: Install de.jcup editors
         if: env.SKIP != 'true'
-        run: scripts/install_dejcup_from_tarballs.sh
+        run: scripts/install_dejcup_from_git.sh
         env:
           DROPINS_ROOT: ${{ env.WIN_ECLIPSE_DIR }}/dropins/custom/eclipse
 
