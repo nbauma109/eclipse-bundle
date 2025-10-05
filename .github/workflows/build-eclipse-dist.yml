@@ -1,4 +1,4 @@
-name: Eclipse + SonarLint + de.jcup (Windows x64)
+name: Eclipse Java (Win x64) — SonarLint + de.jcup + SpotBugs
 
 on:
   schedule:
@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           sudo apt-get update -y
           sudo apt-get install -y unzip zip jq curl git
@@ -23,26 +23,23 @@ jobs:
       - name: Make scripts executable
         run: chmod +x scripts/*.sh
 
-      - name: Get latest Eclipse train
+      # 1) Detect Eclipse train (e.g., 2025-09)
+      - name: Detect latest Eclipse train
         id: train
         run: scripts/get_train.sh
 
-      - name: Get latest SonarLint (GitHub)
-        id: sonarlint
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: scripts/get_sonarlint.sh
-
-      - name: Decide release tag
+      # 2) Decide tag — Eclipse-only (no plugin versions)
+      - name: Decide release tag (Eclipse-only)
         id: decide
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/decide_tag_gitonly.sh
 
-      - name: Stop if release exists
+      - name: Stop if this release already exists
         if: env.SKIP == 'true'
         run: echo "Release ${TAG} already exists — skipping."
 
+      # 3) Download and unpack Eclipse (Windows x64)
       - name: Download Eclipse (Windows x64)
         if: env.SKIP != 'true'
         run: scripts/download_eclipse_windows.sh
@@ -50,22 +47,40 @@ jobs:
       - name: Unpack Windows Eclipse
         if: env.SKIP != 'true'
         run: |
-          mkdir -p win && (cd win && unzip -q "../${WIN_ZIP}")
+          mkdir -p win
+          (cd win && unzip -q "../${WIN_ZIP}")
           echo "WIN_ECLIPSE_DIR=$(realpath win/eclipse)" >> "$GITHUB_ENV"
 
-      - name: Install SonarLint into dropins (zip site)
+      # 4) Detect latest SonarLint (for notes) and install from official zip into dropins
+      - name: Detect latest SonarLint
+        if: env.SKIP != 'true'
+        id: sonarlint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/get_sonarlint.sh
+
+      - name: Install SonarLint into dropins
         if: env.SKIP != 'true'
         run: scripts/install_sonarlint_dropins.sh
         env:
           SONARLINT_VERSION: ${{ steps.sonarlint.outputs.version }}
           DROPINS_ROOT: ${{ env.WIN_ECLIPSE_DIR }}/dropins/custom/eclipse
 
-      - name: Install de.jcup editors from git update-sites
+      # 5) Install de.jcup editors (latest) via GitHub tarballs (no git clone)
+      - name: Install de.jcup editors (tarballs, latest)
         if: env.SKIP != 'true'
-        run: scripts/install_dejcup_from_git.sh
+        run: scripts/install_dejcup_from_tarballs.sh
         env:
           DROPINS_ROOT: ${{ env.WIN_ECLIPSE_DIR }}/dropins/custom/eclipse
 
+      # 6) Install SpotBugs (latest) from GitHub release eclipsePlugin.zip
+      - name: Install SpotBugs (latest)
+        if: env.SKIP != 'true'
+        run: scripts/install_spotbugs.sh
+        env:
+          DROPINS_ROOT: ${{ env.WIN_ECLIPSE_DIR }}/dropins/custom/eclipse
+
+      # 7) Package and release
       - name: Package Windows distro
         if: env.SKIP != 'true'
         run: scripts/pack_windows.sh
@@ -73,13 +88,16 @@ jobs:
       - name: Write release notes
         if: env.SKIP != 'true'
         run: scripts/write_notes_gitonly.sh
+        env:
+          TRAIN: ${{ env.TRAIN }}
+          SONARLINT_VERSION: ${{ steps.sonarlint.outputs.version }}
 
-      - name: Publish release
+      - name: Publish GitHub Release
         if: env.SKIP != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${TAG}" \
             "${WIN_OUT}" \
-            --title "Eclipse Java (Windows x64) + SonarLint ${SONARLINT_VERSION} + de.jcup – ${TRAIN}" \
+            --title "Eclipse Java (Windows x64) — ${TRAIN}" \
             --notes-file RELEASE_NOTES.md
