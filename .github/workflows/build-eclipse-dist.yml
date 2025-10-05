@@ -1,4 +1,4 @@
-name: Eclipse Java (Win x64) — SonarLint + de.jcup + SpotBugs
+name: Eclipse Java (Win x64) — SonarLint + de.jcup + SpotBugs + ECD
 
 on:
   schedule:
@@ -73,6 +73,13 @@ jobs:
         env:
           ECLIPSE_ROOT: ${{ env.WIN_ECLIPSE_DIR }}
 
+      # 5b) Install Enhanced Class Decompiler (ECD)
+      - name: Install Enhanced Class Decompiler (ECD)
+        if: env.SKIP != 'true'
+        run: scripts/install_ecd_from_git.sh
+        env:
+          ECLIPSE_ROOT: ${{ env.WIN_ECLIPSE_DIR }}
+
       # 6) Install SpotBugs (latest) from GitHub release eclipsePlugin.zip
       - name: Install SpotBugs (latest)
         if: env.SKIP != 'true'
@@ -91,6 +98,9 @@ jobs:
         env:
           TRAIN: ${{ env.TRAIN }}
           SONARLINT_VERSION: ${{ steps.sonarlint.outputs.version }}
+          SPOTBUGS_VERSION: ${{ env.SPOTBUGS_VERSION }}
+          ECD_VERSION: ${{ env.ECD_VERSION }}
+          DEJCUP_VERSION_LINES: ${{ env.DEJCUP_VERSION_LINES }}
 
       - name: Publish GitHub Release
         if: env.SKIP != 'true'

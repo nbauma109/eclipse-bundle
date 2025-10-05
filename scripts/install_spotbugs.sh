@@ -11,6 +11,9 @@ mkdir -p "$PLUGINS_DIR" "$FEATURES_DIR"
 echo "[INFO] Fetching latest SpotBugs release..."
 latest_json="$(curl -s https://api.github.com/repos/spotbugs/spotbugs/releases/latest)"
 version="$(echo "$latest_json" | jq -r .tag_name)"
+# export for notes (strip a leading 'v' if present)
+clean_ver="${version#v}"
+echo "SPOTBUGS_VERSION=$clean_ver" >> "$GITHUB_ENV"
 url="$(echo "$latest_json" | jq -r '.assets[] | select(.name=="eclipsePlugin.zip") | .browser_download_url')"
 
 if [[ -z "$url" ]]; then
