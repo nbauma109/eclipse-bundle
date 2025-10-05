@@ -23,7 +23,8 @@ tmpdir="$(mktemp -d)"
 curl -L -o "$tmpdir/eclipsePlugin.zip" "$url"
 
 echo "[INFO] Extracting into ${ECLIPSE_ROOT%/} ..."
-unzip -q "$tmpdir/eclipsePlugin.zip" -d "$ECLIPSE_ROOT"
+unzip -q "$tmpdir/eclipsePlugin.zip" 'features/*' -d "${ECLIPSE_ROOT%/}"
+unzip -q "$tmpdir/eclipsePlugin.zip" 'plugins/*' -d "${ECLIPSE_ROOT%/}"
 
 rm -rf "$tmpdir"
 echo "[INFO] SpotBugs $version installed into ${ECLIPSE_ROOT%/}."
