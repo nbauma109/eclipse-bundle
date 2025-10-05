@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${DROPINS_ROOT:?}"
+: "${ECLIPSE_ROOT:?}"
 
-PLUGINS_DIR="${DROPINS_ROOT%/}/plugins"
-FEATURES_DIR="${DROPINS_ROOT%/}/features"
+PLUGINS_DIR="${ECLIPSE_ROOT%/}/plugins"
+FEATURES_DIR="${ECLIPSE_ROOT%/}/features"
 mkdir -p "$PLUGINS_DIR" "$FEATURES_DIR"
 
 # Update-site repos (contain built features/ & plugins/ across versions)
@@ -20,7 +20,7 @@ REPOS=(
 
 pick_latest_and_copy() {
   local SRC_DIR="$1"   # e.g. /tmp/site/update-site/plugins
-  local DEST_DIR="$2"  # e.g. dropins/.../plugins
+  local DEST_DIR="$2"  # e.g. eclipse/plugins
 
   [[ -d "$SRC_DIR" ]] || { echo "[WARN] Missing $SRC_DIR"; return 0; }
 
@@ -85,4 +85,4 @@ for repo in "${REPOS[@]}"; do
   rm -rf "$tmpdir"
 done
 
-echo "[INFO] de.jcup editors (latest versions) copied to dropins."
+echo "[INFO] de.jcup editors (latest versions) copied to ${ECLIPSE_ROOT%/}."

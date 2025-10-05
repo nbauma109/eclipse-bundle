@@ -51,7 +51,7 @@ jobs:
           (cd win && unzip -q "../${WIN_ZIP}")
           echo "WIN_ECLIPSE_DIR=$(realpath win/eclipse)" >> "$GITHUB_ENV"
 
-      # 4) Detect latest SonarLint (for notes) and install from official zip into dropins
+      # 4) Detect latest SonarLint (for notes) and install from official zip into features/plugins
       - name: Detect latest SonarLint
         if: env.SKIP != 'true'
         id: sonarlint
@@ -59,26 +59,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: scripts/get_sonarlint.sh
 
-      - name: Install SonarLint into dropins
+      - name: Install SonarLint into features/plugins
         if: env.SKIP != 'true'
-        run: scripts/install_sonarlint_dropins.sh
+        run: scripts/install_sonarlint.sh
         env:
           SONARLINT_VERSION: ${{ steps.sonarlint.outputs.version }}
-          DROPINS_ROOT: ${{ env.WIN_ECLIPSE_DIR }}/dropins/custom/eclipse
+          ECLIPSE_ROOT: ${{ env.WIN_ECLIPSE_DIR }}
 
       # 5) Install de.jcup editors (latest) via git clone
       - name: Install de.jcup editors
         if: env.SKIP != 'true'
         run: scripts/install_dejcup_from_git.sh
         env:
-          DROPINS_ROOT: ${{ env.WIN_ECLIPSE_DIR }}/dropins/custom/eclipse
+          ECLIPSE_ROOT: ${{ env.WIN_ECLIPSE_DIR }}
 
       # 6) Install SpotBugs (latest) from GitHub release eclipsePlugin.zip
       - name: Install SpotBugs (latest)
         if: env.SKIP != 'true'
         run: scripts/install_spotbugs.sh
         env:
-          DROPINS_ROOT: ${{ env.WIN_ECLIPSE_DIR }}/dropins/custom/eclipse
+          ECLIPSE_ROOT: ${{ env.WIN_ECLIPSE_DIR }}
 
       # 7) Package and release
       - name: Package Windows distro

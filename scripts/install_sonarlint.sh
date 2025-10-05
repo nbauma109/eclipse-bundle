@@ -2,19 +2,19 @@
 set -euo pipefail
 
 : "${SONARLINT_VERSION:?}"
-: "${DROPINS_ROOT:?}"
+: "${ECLIPSE_ROOT:?}"
 
-PLUGINS_DIR="${DROPINS_ROOT%/}/plugins"
-FEATURES_DIR="${DROPINS_ROOT%/}/features"
+PLUGINS_DIR="${ECLIPSE_ROOT%/}/plugins"
+FEATURES_DIR="${ECLIPSE_ROOT%/}/features"
 mkdir -p "$PLUGINS_DIR" "$FEATURES_DIR"
 
 ZIP_URL="https://binaries.sonarsource.com/SonarLint-for-Eclipse/releases/org.sonarlint.eclipse.site-${SONARLINT_VERSION}.zip"
 echo "[INFO] Downloading SonarLint site zip: $ZIP_URL"
 curl -fL --retry 5 -o /tmp/sonarlint.zip "$ZIP_URL"
 
-echo "[INFO] Extracting SonarLint features/plugins into dropins..."
-unzip -q -o /tmp/sonarlint.zip 'features/*' -d "$FEATURES_DIR/.."
-unzip -q -o /tmp/sonarlint.zip 'plugins/*'  -d "$PLUGINS_DIR/.."
+echo "[INFO] Extracting SonarLint features/plugins into ${ECLIPSE_ROOT%/} ..."
+unzip -q -o /tmp/sonarlint.zip 'features/*' -d "${ECLIPSE_ROOT%/}"
+unzip -q -o /tmp/sonarlint.zip 'plugins/*'  -d "${ECLIPSE_ROOT%/}"
 
 echo "[INFO] Pruning sloop jars and expanding Windows x64..."
 # keep only windows.x64 sloop, remove others, and unzip it to folder of same name
@@ -31,4 +31,4 @@ else
   rm -f "$SLOOP_JAR"
 fi
 
-echo "[INFO] SonarLint ready in dropins."
+echo "[INFO] SonarLint ready in ${ECLIPSE_ROOT%/}."

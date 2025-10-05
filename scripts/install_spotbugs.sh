@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${DROPINS_ROOT:?}"
+: "${ECLIPSE_ROOT:?}"
 
-PLUGINS_DIR="${DROPINS_ROOT%/}/plugins"
-FEATURES_DIR="${DROPINS_ROOT%/}/features"
+PLUGINS_DIR="${ECLIPSE_ROOT%/}/plugins"
+FEATURES_DIR="${ECLIPSE_ROOT%/}/features"
 mkdir -p "$PLUGINS_DIR" "$FEATURES_DIR"
 
 # Find latest release tag from GitHub API
@@ -22,8 +22,8 @@ echo "[INFO] Downloading SpotBugs $version from $url ..."
 tmpdir="$(mktemp -d)"
 curl -L -o "$tmpdir/eclipsePlugin.zip" "$url"
 
-echo "[INFO] Extracting into dropins ..."
-unzip -q "$tmpdir/eclipsePlugin.zip" -d "$DROPINS_ROOT"
+echo "[INFO] Extracting into ${ECLIPSE_ROOT%/} ..."
+unzip -q "$tmpdir/eclipsePlugin.zip" -d "$ECLIPSE_ROOT"
 
 rm -rf "$tmpdir"
-echo "[INFO] SpotBugs $version installed into dropins."
+echo "[INFO] SpotBugs $version installed into ${ECLIPSE_ROOT%/}."
