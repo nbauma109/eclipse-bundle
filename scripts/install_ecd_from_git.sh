@@ -16,20 +16,40 @@ if [[ -z "${latest_tag:-}" ]]; then
   exit 1
 fi
 
-zip_url="https://github.com/nbauma109/ecd/releases/download/${latest_tag}/enhanced-class-decompiler-${latest_tag}.zip"
 echo "[INFO] Latest ECD version: $latest_tag"
-echo "[INFO] Download URL: $zip_url"
+
+# Try .tar.xz first, fallback to .zip (for older releases)
+tar_url="https://github.com/nbauma109/ecd/releases/download/${latest_tag}/enhanced-class-decompiler-${latest_tag}.tar.xz"
+zip_url="https://github.com/nbauma109/ecd/releases/download/${latest_tag}/enhanced-class-decompiler-${latest_tag}.zip"
 
 tmpdir="$(mktemp -d)"
-curl -fL --retry 5 -o "$tmpdir/ecd.zip" "$zip_url"
 
-echo "[INFO] Extracting into ${ECLIPSE_ROOT%/} ..."
-unzip -q -o "$tmpdir/ecd.zip" 'features/*' -d "${ECLIPSE_ROOT%/}"
-unzip -q -o "$tmpdir/ecd.zip" 'plugins/*'  -d "${ECLIPSE_ROOT%/}"
+echo "[INFO] Checking archive type..."
+if curl -fsI "$tar_url" >/dev/null 2>&1; then
+  echo "[INFO] Using tar.xz archive"
+  archive="$tmpdir/ecd.tar.xz"
+  curl -fL --retry 5 -o "$archive" "$tar_url"
+  echo "[INFO] Extracting ECD tar.xz ..."
+  tar -xf "$archive" -C "$tmpdir"
+
+elif curl -fsI "$zip_url" >/dev/null 2>&1; then
+  echo "[INFO] Using zip archive"
+  archive="$tmpdir/ecd.zip"
+  curl -fL --retry 5 -o "$archive" "$zip_url"
+  echo "[INFO] Extracting ECD zip ..."
+  unzip -q "$archive" -d "$tmpdir"
+
+else
+  echo "[ERROR] Neither .tar.xz nor .zip ECD asset found!"
+  exit 1
+fi
+
+# Clean path: both archives contain "features" and "plugins" at root
+echo "[INFO] Copying plugins/features ..."
+cp -r "$tmpdir"/features/* "$FEATURES_DIR"/ 2>/dev/null || true
+cp -r "$tmpdir"/plugins/* "$PLUGINS_DIR"/   2>/dev/null || true
 
 rm -rf "$tmpdir"
 
-# Export version for release notes
 echo "ECD_VERSION=$latest_tag" >> "$GITHUB_ENV"
-
 echo "[INFO] ECD $latest_tag installed into ${ECLIPSE_ROOT%/}."
