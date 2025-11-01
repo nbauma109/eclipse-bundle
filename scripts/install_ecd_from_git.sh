@@ -18,7 +18,7 @@ fi
 
 echo "[INFO] Latest ECD version: $latest_tag"
 
-# Try .tar.xz first, fallback to .zip (for older releases)
+# Try .tar.xz first, fallback to .zip
 tar_url="https://github.com/nbauma109/ecd/releases/download/${latest_tag}/enhanced-class-decompiler-${latest_tag}.tar.xz"
 zip_url="https://github.com/nbauma109/ecd/releases/download/${latest_tag}/enhanced-class-decompiler-${latest_tag}.zip"
 
